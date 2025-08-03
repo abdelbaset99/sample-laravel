@@ -1,0 +1,105 @@
+
+services:
+  app:
+    image: sample-laravel:latest
+    networks:
+      - webnet
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+      resources:
+        limits: 
+          cpus: '0.25'
+          memory: 256M 
+            
+  nginx:
+    image: nginx:alpine
+    networks:
+      - webnet
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+      resources:
+        limits: 
+          cpus: '0.25'
+          memory: 256M 
+    ports:
+      - "9001:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
+  mysql-primary:
+    image: mysql:8.0
+    networks:
+      - webnet
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+      resources:
+        limits: 
+          cpus: '0.25'
+          memory: 256M
+    configs:
+      - source: primary_cnf
+        target: /etc/my.cnf
+        mode: 0444
+    secrets:
+      - mysql_root_password
+      - mysql_password 
+    environment:
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/mysql_root_password
+      MYSQL_DATABASE: laravel
+      MYSQL_USER: laravel
+      MYSQL_PASSWORD_FILE: /run/secrets/mysql_password
+    volumes:
+      - mysql-primary:/var/lib/mysql
+      - ./mysql-primary-init.sh:/usr/local/bin/custom-entrypoint.sh:ro
+    entrypoint: ["/usr/local/bin/custom-entrypoint.sh"]
+      
+  mysql-replica:
+    image: mysql:8.0
+    networks:
+      - webnet
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+      resources:
+        limits: 
+          cpus: '0.25'
+          memory: 256M
+    configs:
+      - source: replica_cnf
+        target: /etc/my.cnf
+        mode: 0444
+    secrets:
+      - mysql_root_password
+      - mysql_password 
+    environment:
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/mysql_root_password
+    volumes:
+      - mysql-replica:/var/lib/mysql
+      - ./mysql-replica-init.sh:/usr/local/bin/custom-entrypoint.sh:ro
+    entrypoint: ["/usr/local/bin/custom-entrypoint.sh"]
+
+networks:
+  webnet:
+
+volumes:
+  mysql-primary:
+  mysql-replica:
+
+configs:
+  primary_cnf:
+    file: ./mysql-primary.cnf
+  replica_cnf:
+    file: ./mysql-replica.cnf
+    
+secrets:
+  mysql_root_password: 
+    external: true
+  mysql_password: 
+    external: true

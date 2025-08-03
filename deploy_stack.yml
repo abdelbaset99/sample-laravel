@@ -1,0 +1,134 @@
+---
+- name: Deploy Docker Swarm Laravel Stack
+  hosts: all
+  become: yes
+  vars:
+    domains:
+      - hr.intern.local
+      - devops.intern.local
+    ssl_cert_path: /etc/nginx/ssl
+    app_stack_file: /home/{{ ansible_user }}/docker-stack.yml
+  tasks:
+    - name: Update OS packages (Ubuntu)
+      apt:
+        update_cache: yes
+        upgrade: dist
+      when: ansible_facts['os_family'] == 'Debian'
+
+    - name: Update OS packages (RedHat)
+      yum:
+        name: "*"
+        state: latest
+      when: ansible_facts['os_family'] == 'RedHat'
+
+    - name: Install required packages for Docker (Ubuntu)
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg-agent
+          - software-properties-common
+        state: present
+      when: ansible_facts['os_family'] == 'Debian'
+
+    - name: Install required packages for Docker (RedHat)
+      yum:
+        name:
+          - yum-utils
+          - device-mapper-persistent-data
+          - lvm2
+        state: present
+      when: ansible_facts['os_family'] == 'RedHat'
+
+    - name: Add Docker GPG key (Ubuntu)
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+      when: ansible_facts['os_family'] == 'Debian'
+
+    - name: Add Docker repository (Ubuntu)
+      apt_repository:
+        repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_lsb.codename }} stable
+        state: present
+      when: ansible_facts['os_family'] == 'Debian'
+
+    - name: Add Docker repository (RedHat)
+      yum_repository:
+        name: docker-ce
+        description: Docker CE Stable - $basearch
+        baseurl: https://download.docker.com/linux/centos/7/$basearch/stable
+        gpgcheck: yes
+        gpgkey: https://download.docker.com/linux/centos/gpg
+        enabled: yes
+      when: ansible_facts['os_family'] == 'RedHat'
+
+    - name: Install Docker (latest)
+      package:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+        state: latest
+
+    - name: Start and enable Docker service
+      service:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Initialize Docker Swarm manager
+      shell: docker swarm init || true
+      args:
+        warn: false
+
+    - name: Install Nginx
+      package:
+        name: nginx
+        state: present
+
+    - name: Create SSL directory
+      file:
+        path: "{{ ssl_cert_path }}"
+        state: directory
+        mode: "0755"
+
+    - name: Generate self-signed SSL certificate for each domain
+      shell: |
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+          -keyout {{ ssl_cert_path }}/{{ item }}.key \
+          -out {{ ssl_cert_path }}/{{ item }}.crt \
+          -subj "/CN={{ item }}"
+      loop: "{{ domains }}"
+      args:
+        creates: "{{ ssl_cert_path }}/{{ item }}.crt"
+
+    - name: Configure Nginx for each domain
+      blockinfile:
+        path: /etc/nginx/conf.d/{{ item }}.conf
+        create: yes
+        block: |
+          server {
+              listen 443 ssl;
+              server_name {{ item }};
+              ssl_certificate {{ ssl_cert_path }}/{{ item }}.crt;
+              ssl_certificate_key {{ ssl_cert_path }}/{{ item }}.key;
+              location / {
+                  proxy_pass http://127.0.0.1:8080;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+          }
+      loop: "{{ domains }}"
+
+    - name: Reload Nginx
+      service:
+        name: nginx
+        state: reloaded
+
+    - name: Deploy application as Docker stack
+      shell: docker stack deploy -c {{ app_stack_file }} laravel_stack
+      args:
+        warn: false
